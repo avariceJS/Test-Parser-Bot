@@ -1,14 +1,46 @@
+
+# Base
+import shutil
+from dotenv import load_dotenv
 import requests
-import json
 import re
 import os
-from bs4 import BeautifulSoup
 
-messages = []
-limit = 0
-iteration = 0
-bot_token = '6616595798:AAFRxsUqV4Bp8hqiA1HcI_bYnpehkE25qHM'
+# bs4
+from bs4 import BeautifulSoup, Tag
 
+load_dotenv()
+
+# Bot token
+BOT_TOKEN = f'{os.getenv("BOT_TOKEN")}'
+
+# Bot token for API requests
+FILES_FOLDER = './files'
+GROUP_DATA_FILE = 'telegram_group_data.txt'
+
+# Function to delete a folder and its contents
+def delete_folder(folder_path):
+    try:
+        shutil.rmtree(folder_path)
+        print("Папка успешно удалена:", folder_path)
+    except OSError as e:
+        print("Ошибка при удалении папки:", folder_path, e)
+
+# Function to delete a file
+def delete_file(file_path):
+    try:
+        os.remove(file_path)
+        print("Файл успешно удален:", file_path)
+    except OSError as e:
+        print("Ошибка при удалении файла:", file_path, e)
+
+# Delete existing folder and file
+delete_folder(FILES_FOLDER)
+delete_file(GROUP_DATA_FILE)
+
+os.makedirs(FILES_FOLDER)
+
+# Function to extract filename from Content-Disposition header
 def get_filename_from_cd(cd):
     if not cd:
         return None
@@ -17,26 +49,38 @@ def get_filename_from_cd(cd):
         return None
     return fname[0]
 
-def domAll(url):
+# Function to parse HTML content using BeautifulSoup
+def dom_all(url):
     html_text = requests.get(url).text
     return BeautifulSoup(html_text, 'html.parser')
 
-def download(url, file_path='./files/'):
+
+# Function to download a file from a URL
+def download(url, file_path= FILES_FOLDER +'/'):
     if url:
         r = requests.get(url, allow_redirects=True)
         name = url.split('/')[-1][:20]
         content_type = r.headers.get('content-type')
         if content_type:
-            file_extension = content_type.split('/')[1]
-            filename = '{}.{}'.format(name, file_extension)
-            file = os.path.join(file_path, filename)
-            if not os.path.exists(file_path):
-                os.makedirs(file_path)
-            with open(file, 'wb') as f:
-                f.write(r.content)
+            if 'image' in content_type:
+                file_extension = content_type.split('/')[1]
+                filename = '{}.{}'.format(name, file_extension)
+                file = os.path.join(file_path, filename)
+                if not os.path.exists(file_path):
+                    os.makedirs(file_path)
+                with open(file, 'wb') as f:
+                    f.write(r.content)
+                return file
+            else:
+                print("Пропущен файл с типом контента:", content_type)
+        else:
+            print("Не удалось определить тип контента для файла:", url)
+    else:
+        print("URL для загрузки файла не указан.")
 
+# Function to get the number of members in a chat
 def get_chat_members_count(chat_id):
-    url = f"https://api.telegram.org/bot{bot_token}/getChatMembersCount?chat_id={chat_id}"
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMembersCount?chat_id={chat_id}"
     response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
@@ -44,8 +88,9 @@ def get_chat_members_count(chat_id):
             return data["result"]
     return None
 
+# Function to get the usernames of members in a chat
 def get_chat_members(chat_id):
-    url = f"https://api.telegram.org/bot{bot_token}/getChatMembers?chat_id={chat_id}"
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMembers?chat_id={chat_id}"
     response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
@@ -54,10 +99,10 @@ def get_chat_members(chat_id):
             return members
     return None
 
-def parse_all(url):
-    global iteration, limit
-    soup = domAll(url)
-
+# Function to parse all messages from a group/channel
+def parse_all(url, limit, is_download=False, iteration=0, messages=[]):
+    soup = dom_all(url)
+    
     contents = soup.findAll('div', {'class': 'tgme_widget_message_wrap'})
     for content in contents:
         result = {}
@@ -74,7 +119,8 @@ def parse_all(url):
         if photo:
             photo_url = photo.get('style').split("'")[1]
             result['photo'] = photo_url
-            download(photo_url)
+            if is_download:
+                download(photo_url)
 
         views = content.find('span', {'class': 'tgme_widget_message_views'})
         if views:
@@ -109,37 +155,40 @@ def parse_all(url):
 
         messages.append(result)
     
+
     prev_link = soup.find(rel="prev")
-    if prev_link and (limit == 0 or iteration < limit):
+    if prev_link and isinstance(prev_link, Tag) and (int(limit) == 0 or int(iteration) < int(limit)):
         iteration += 1
-        parse_all('https://t.me{}'.format(prev_link.get('href')))
+        parse_all('https://t.me{}'.format(prev_link.get('href')), limit, is_download, iteration, messages)
+        return messages
 
-    return messages
+# Function to count files in a folder
+def count_files_in_folder(folder_path):
+    if os.path.exists(folder_path):
+        files = os.listdir(folder_path)
+        return len(files)
+    else:
+        return 0
 
+# Main function to parse messages and download media files if required
 def parser_main(url, limit, is_download, chat_id):
-
     if "/s/" not in url:
         url_parts = url.split("//")
         if len(url_parts) > 1:
             url = url_parts[0] + "//" + url_parts[1].replace("/", "/s/", 1)
-    res = parse_all(url)
+    res = parse_all(url, limit)
 
-    members_count = get_chat_members_count(chat_id)
-    if members_count is not None:
-        print("Количество участников в группе:", members_count)
-    else:
-        print("Не удалось получить количество участников группы.")
-
-    members = get_chat_members(chat_id)
-    if members is not None:
-        print("Никнеймы участников группы:")
-        print(", ".join(members))
-    else:
-        print("Не удалось получить список участников группы.")
-
-    for message in res:
-        print(json.dumps(message, ensure_ascii=False))
-
-    json_string = json.dumps(res, ensure_ascii=False)
-    with open('telegram_group_data.json', 'w', encoding='utf-8') as json_file:
-        json_file.write(json_string)
+    # Write parsed data to file
+    with open(GROUP_DATA_FILE, 'w', encoding='utf-8') as txt_file:
+        if res is not None:
+            for message in res:
+                txt_file.write(str(message) + '\n')
+    
+    photo_files = []
+    if is_download == "yes":
+        if res is not None:
+            for message in res:
+                if 'photo' in message:
+                    photo_file = download(message['photo'])
+                    photo_files.append(photo_file)
+    return res, GROUP_DATA_FILE, photo_files
